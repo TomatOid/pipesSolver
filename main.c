@@ -35,7 +35,7 @@ union __attribute__((__packed__)) cell_state {
 struct state_set {
     union cell_state *array;
     union cell_state possible;
-    uint16_t bitmask;
+    uint32_t bitmask;
 };
 
 union cell_state split[12] = {
@@ -77,6 +77,10 @@ union cell_state single_src[4] = {
 union cell_state edge[1] = {
     { NONE, NONE, NONE, NONE },
 };
+
+union cell_state all_pipes[28];
+
+union cell_state all_src[10];
 
 const union cell_state in_out_none = {
     { IN | OUT | NONE, IN | OUT | NONE, IN | OUT | NONE, IN | OUT | NONE },
@@ -165,6 +169,12 @@ struct state_set *parseBoard(const char *str, size_t *width, size_t *height)
         case 'e':
             board[i] = (struct state_set) { .array = edge, .possible = { NONE, NONE, NONE, NONE }, .bitmask = 1 };
             break;
+        case 'a':
+            board[i] = (struct state_set) { .array = all_pipes, .possible = in_out_none, .bitmask = (1 << 28) - 1 };
+            break;
+        case 'A':
+            board[i] = (struct state_set) { .array = all_src, .possible = out_none, .bitmask = (1 << 10) - 1 };
+            break;
         case '\n':
             i--;
             continue;
@@ -249,13 +259,13 @@ struct xy {
 
 #define SPECIAL 0xFFFFFFFF
 
-void DFSCheck(struct state_set *board, uint32_t *explore, int x, int y)
+int DFSCheck(struct state_set *board, uint32_t *explore, int x, int y)
 {
     struct state_set current = board[x + y * dim_x];
     uint32_t *mark = &explore[x + y * dim_x];
 
     if (*mark == SPECIAL) {
-        return;
+        return 1;
     }
 
     *mark = SPECIAL;
@@ -265,18 +275,22 @@ void DFSCheck(struct state_set *board, uint32_t *explore, int x, int y)
     int e_x = (x + 1) % dim_x;
     int w_x = (x - 1 + dim_x) % dim_x;
 
+    int res = 0;
+
     if (current.possible.n & 5) {
-        DFSCheck(board, explore, x, n_y);
+        res += DFSCheck(board, explore, x, n_y);
     }
     if (current.possible.e & 5) {
-        DFSCheck(board, explore, e_x, y);
+        res += DFSCheck(board, explore, e_x, y);
     }
     if (current.possible.s & 5) {
-        DFSCheck(board, explore, x, s_y);
+        res += DFSCheck(board, explore, x, s_y);
     }
     if (current.possible.w & 5) {
-        DFSCheck(board, explore, w_x, y);
+        res += DFSCheck(board, explore, w_x, y);
     }
+    
+    return res;
 }    
 
 int solve(struct state_set *board)
@@ -319,7 +333,7 @@ int solve(struct state_set *board)
 #ifdef ANIMATE
             printf("\033[0;0H");
             printResult(board);
-            usleep(15000);
+            usleep(1000);
 #endif
             
             int x = queue[q_start % size].x;
@@ -396,24 +410,42 @@ int solve(struct state_set *board)
             memcpy(new_board, board, sizeof(struct state_set) * size);
 
             // collapse orientation of a pipe but not flow direction
-            uint16_t new_mask;
-            int rand_pool;
-            struct state_set *curr;
-            do {
-                rand_pool = random() % explored_len;
-                curr = &new_board[pool[rand_pool].x + pool[rand_pool].y * dim_x];
-                int j = __builtin_ctz((int)curr->bitmask);
-                new_mask = 1 << j;
-                int j_max = CHAR_BIT * sizeof(int) - __builtin_clz((int)curr->bitmask);
-                uint16_t first = curr->array[j].bits & 02222;
-                
-                for (; j < j_max; j++)
-                    if (curr->array[j].bits & 02222 == first)
-                        new_mask |= 1 << j;
+            uint32_t new_mask;
+            struct state_set *least_entropy;
+            int min = 33;
+            int min_idx;
+            for (int j = 0; j < explored_len; j++) {
+                struct state_set *curr = &new_board[pool[j].x + pool[j].y * dim_x];
+                int popcnt = __builtin_popcount((int)curr->bitmask);
+                if (popcnt < min) {
+                    int k = __builtin_ctz((int)curr->bitmask);
+                    new_mask = 1 << k;
+                    int k_max = CHAR_BIT * sizeof(int) - __builtin_clz((int)curr->bitmask);
+                    uint32_t first = curr->array[k].bits & 02222;
+                    
+                    for (; k < k_max; k++)
+                        if (curr->array[k].bits & 02222 == first)
+                            new_mask |= 1 << k;
 
-            } while (__builtin_popcount((int)curr->bitmask <= 1));
+                    if (new_mask == curr->bitmask)
+                        continue;
 
-            curr->bitmask = new_mask;
+                    min = popcnt;
+                    min_idx = j;
+                    least_entropy = curr;
+                }
+            }
+            
+            int k = __builtin_ctz((int)least_entropy->bitmask);
+            new_mask = 1 << k;
+            int k_max = CHAR_BIT * sizeof(int) - __builtin_clz((int)least_entropy->bitmask);
+            uint32_t first = least_entropy->array[k].bits & 02222;
+            
+            for (; k < k_max; k++)
+                if (least_entropy->array[k].bits & 02222 == first)
+                    new_mask |= 1 << k;
+
+            least_entropy->bitmask = new_mask;
 
             if (solve(new_board)) {
                 memcpy(board, new_board, size * sizeof(struct state_set));
@@ -421,7 +453,7 @@ int solve(struct state_set *board)
                 goto success;
             }
             else {
-                board[pool[rand_pool].x + pool[rand_pool].y * dim_x].bitmask &= ~new_mask;
+                board[pool[min_idx].x + pool[min_idx].y * dim_x].bitmask &= ~new_mask;
                 pool_len += explored_len;
                 explored_len = 0;
             }
@@ -604,6 +636,24 @@ void boardOutput(struct state_set *board, char *str)
     *str = 0;
 }
 
+void generatePuzzle()
+{
+    const char *blank_6 =
+        "aaaaaaae\n"
+        "aaaaaaae\n"
+        "aaaaaaae\n"
+        "aaaAaaae\n"
+        "aaaaaaae\n"
+        "aaaaaaae\n"
+        "aaaaaaae\n"
+        "eeeeeeee\n";
+
+    struct state_set *board = parseBoard(blank_6, &dim_x, &dim_y);
+    
+    solve(board);
+    //printResult(board);
+}
+
 #define SIZE "8"
 
 int main()
@@ -616,6 +666,20 @@ int main()
     createRotations(split_src, array_len(split_src));
     createRotations(elbow_src, array_len(elbow_src));
     createRotations(single_src, array_len(single_src));
+
+    char *all_pipes_curr = (char *)all_pipes;
+    memcpy(all_pipes_curr, split, sizeof(split));
+    memcpy((all_pipes_curr += sizeof(split)), pipe, sizeof(pipe));
+    memcpy((all_pipes_curr += sizeof(pipe)), elbow, sizeof(elbow));
+    memcpy((all_pipes_curr += sizeof(elbow)), sink, sizeof(sink));
+
+    char *all_src_curr = (char *)all_src;
+    memcpy(all_src_curr, split_src, sizeof(split_src));
+    memcpy((all_src_curr += sizeof(split_src)), pipe_src, sizeof(pipe_src));
+    memcpy((all_src_curr += sizeof(pipe_src)), elbow_src, sizeof(elbow_src));
+
+    generatePuzzle();
+    return 0;
 
     regex_t task_reg;
     if (regcomp(&task_reg, "var task = '[1-9a-e]+';", REG_EXTENDED))
