@@ -9,11 +9,9 @@
 #include <regex.h>
 #include <string.h>
 #include <math.h>
-#include <time.h>
 //#include <unistd.h>
 
-//#define ANIMATE
-#define SPECIAL 0xFFFFFFFF
+#define ANIMATE
 
 int usleep(uint64_t usec);
 
@@ -24,7 +22,6 @@ enum face_state_t {
     NONE = 1 << 1,
     OUT = 1 << 2,
 };
-
 union __attribute__((__packed__)) cell_state {
     struct __attribute__((__packed__)) {
         unsigned n : 3;
@@ -217,28 +214,6 @@ void printResult(struct state_set *board)
     }
 }
 
-void printResultMasked(struct state_set *board, uint32_t *mask)
-{
-    setlocale(LC_ALL, "");
-    int faint_mode = 0;
-
-    for (int y = 0; y < dim_y; y++) { 
-        for (int x = 0; x < dim_x; x++) { 
-            if (!faint_mode && mask[x + y * dim_x] != SPECIAL) {
-                faint_mode = 1;
-                printf("\033[38;5;31m");
-            }
-            else if (faint_mode && mask[x + y * dim_x] == SPECIAL) {
-                faint_mode = 0;
-                printf("\033[0m");
-            }
-            printCell(board[x + y * dim_x].possible);
-        }
-        puts("");
-    }
-    printf("\033[0m");
-}
-
 union cell_state getSurroundings(struct state_set *board, int x, int y)
 {
     union cell_state res = { 0 };
@@ -282,6 +257,7 @@ struct xy {
     int y;
 };
 
+#define SPECIAL 0xFFFFFFFF
 
 int DFSCheck(struct state_set *board, uint32_t *explore, int x, int y)
 {
@@ -315,118 +291,7 @@ int DFSCheck(struct state_set *board, uint32_t *explore, int x, int y)
     }
     
     return res;
-}
-
-int max(int a, int b) 
-{
-    return (a > b) ? a : b;
-}
-
-enum {
-    DIR_NONE,
-    DIR_NORTH,
-    DIR_EAST,
-    DIR_SOUTH,
-    DIR_WEST,
-};
-
-int DFSCheckLoop(struct state_set *board, uint32_t *explore, int x, int y, int dir)
-{
-    struct state_set current = board[x + y * dim_x];
-    uint32_t *mark = &explore[x + y * dim_x];
-
-    if (*mark == SPECIAL) {
-        return 1;
-    }
-
-    *mark = SPECIAL;
-
-    int n_y = (y - 1 + dim_y) % dim_y;
-    int s_y = (y + 1) % dim_y;
-    int e_x = (x + 1) % dim_x;
-    int w_x = (x - 1 + dim_x) % dim_x;
-
-    int res = 0;
-
-    union cell_state outer = getSurroundings(board, x, y);
-
-    if (dir != DIR_SOUTH && !(current.possible.n & NONE)) {
-        res = max(res, DFSCheckLoop(board, explore, x, n_y, DIR_NORTH));
-    }
-    if (dir != DIR_WEST  && !(current.possible.e & NONE)) {
-        res = max(res, DFSCheckLoop(board, explore, e_x, y, DIR_EAST));
-    }
-    if (dir != DIR_NORTH && !(current.possible.s & NONE)) {
-        res = max(res, DFSCheckLoop(board, explore, x, s_y, DIR_SOUTH));
-    }
-    if (dir != DIR_EAST  && !(current.possible.w & NONE)) {
-        res = max(res, DFSCheckLoop(board, explore, w_x, y, DIR_WEST));
-    }
-
-    return res;
-}
-
-int containsLoops(struct state_set *board)
-{
-    const int size = dim_x * dim_y;
-    uint32_t *explore = calloc(sizeof(uint32_t), size);
-
-    for (int y = 0; y < dim_y; y++) {
-        for (int x = 0; x < dim_x; x++) {
-            if (explore[x + y * dim_x] != SPECIAL) {
-                if (DFSCheckLoop(board, explore, x, y, DIR_NONE)) {
-                    free(explore);
-                    return 1;
-                }
-            }
-        }
-    }
-
-    free(explore);
-    return 0;
-}
-
-char is_single_option[8] = { 0, 1, 1, 0, 1, 0, 0, 0 };
-
-void markAllDependent(struct state_set *board, uint32_t *explore, int x, int y)
-{
-    struct state_set current = board[x + y * dim_x];
-    uint32_t *mark = &explore[x + y * dim_x];
-
-    if (*mark == SPECIAL) {
-        return;
-    }
-
-    *mark = SPECIAL;
-
-    int n_y = (y - 1 + dim_y) % dim_y;
-    int s_y = (y + 1) % dim_y;
-    int e_x = (x + 1) % dim_x;
-    int w_x = (x - 1 + dim_x) % dim_x;
-
-    int res = 0;
-
-    if (!is_single_option[current.possible.n]) {
-        markAllDependent(board, explore, x, n_y);
-    }
-    if (!is_single_option[current.possible.e]) {
-        markAllDependent(board, explore, e_x, y);
-    }
-    if (!is_single_option[current.possible.s]) {
-        markAllDependent(board, explore, x, s_y);
-    }
-    if (!is_single_option[current.possible.w]) {
-        markAllDependent(board, explore, w_x, y);
-    }
-}
-    
-
-int randCmpFn(const void *a, const void *b)
-{
-    return (a == b) ? (random() & 2) - 1 : 2 * (a > b) - 1;
-}
-
-int solveMasked(struct state_set *board, uint32_t *mask);
+}    
 
 int solve(struct state_set *board)
 {
@@ -444,6 +309,7 @@ int solve(struct state_set *board)
     int q_start = 0;
     int q_end = 0;
     int solved = 0;
+    srandom(31542);
 
     for (int i = 0; i < size; i++) {
         updatePossible(board, i % dim_x, i / dim_x);
@@ -454,9 +320,7 @@ int solve(struct state_set *board)
         if (__builtin_popcount(board[i].bitmask) == 0)
             goto fail;
     }
-
-    memset(explore, 0, size * sizeof(*explore));
-
+    
     for (uint32_t breadth = 0; pool_len > 0;) {
         int selection = random() % pool_len;
         int x_r = pool[selection].x;
@@ -542,287 +406,66 @@ int solve(struct state_set *board)
             }
         }
         if (pool_len == 0 && explored_len > 0) {
-            if (containsLoops(board)) {
-                goto fail;
-            }
-
             struct state_set *new_board = calloc(sizeof(struct state_set), size);
             memcpy(new_board, board, sizeof(struct state_set) * size);
 
+            // collapse orientation of a pipe but not flow direction
             uint32_t new_mask;
-            //int rand_pool;
-            struct state_set *curr;
+            struct state_set *least_entropy;
+            int min = 33;
+            int min_idx;
+            for (int j = 0; j < explored_len; j++) {
+                struct state_set *curr = &new_board[pool[j].x + pool[j].y * dim_x];
+                int popcnt = __builtin_popcount((int)curr->bitmask);
+                if (popcnt < min) {
+                    int k = __builtin_ctz((int)curr->bitmask);
+                    new_mask = 1 << k;
+                    int k_max = CHAR_BIT * sizeof(int) - __builtin_clz((int)curr->bitmask);
+                    uint32_t first = curr->array[k].bits & 02222;
+                    
+                    for (; k < k_max; k++)
+                        if (curr->array[k].bits & 02222 == first)
+                            new_mask |= 1 << k;
 
-            qsort(pool, explored_len, sizeof(*pool), randCmpFn);
-            curr = &new_board[pool->x + pool->y * dim_x];
-            updatePossible(board, pool->x, pool->y);
-            if (__builtin_popcount((int)curr->bitmask) == 0)
-                goto fail;
-            int random_start = random() & 31;
-            uint16_t first;
-            
-            for (int j = 0; j < 32; j++)
-                if ((new_mask = 1 << ((j + random_start) & 31)) & curr->bitmask) {
-                    first = curr->array[(j + random_start) & 31].bits & 02222;
-                    break;
+                    if (new_mask == curr->bitmask)
+                        continue;
+
+                    min = popcnt;
+                    min_idx = j;
+                    least_entropy = curr;
                 }
-
-            int j_max = CHAR_BIT * sizeof(int) - __builtin_clz((int)curr->bitmask);
-
-
-            curr->bitmask = new_mask;
+            }
             
-            memset(explore, 0, size * sizeof(*explore));
-            markAllDependent(new_board, explore, pool->x, pool->y);
+            int k = __builtin_ctz((int)least_entropy->bitmask);
+            new_mask = 1 << k;
+            int k_max = CHAR_BIT * sizeof(int) - __builtin_clz((int)least_entropy->bitmask);
+            uint32_t first = least_entropy->array[k].bits & 02222;
             
-            if (solveMasked(new_board, explore)) {
-                pool_len = 0;
+            for (; k < k_max; k++)
+                if (least_entropy->array[k].bits & 02222 == first)
+                    new_mask |= 1 << k;
+
+            least_entropy->bitmask = new_mask;
+
+            if (solve(new_board)) {
                 memcpy(board, new_board, size * sizeof(struct state_set));
-                for (int i = 0; i < size; i++) {
-                    updatePossible(board, i % dim_x, i / dim_x);
-                    if (__builtin_popcount(board[i].bitmask) != 1) {
-                        pool[pool_len].x = i % dim_x;
-                        pool[pool_len++].y = i / dim_x;
-                    }
-                    if (__builtin_popcount(board[i].bitmask) == 0)
-                        goto fail;
-                }
-                
+                free(new_board);
+                goto success;
             }
             else {
-                board[pool[0].x + pool[0].y * dim_x].bitmask &= ~new_mask;
-                pool_len += explored_len;
-            }
-            explored_len = 0;
-
-            memset(explore, 0, size * sizeof(*explore));
-
-            free(new_board);
-        }
-    }
-
-    memset(explore, 0, size * sizeof(*explore));
-
-    DFSCheck(board, explore, 0, 0);
-
-    for (int i = 0; i < size; i++)
-        if (explore[i] != SPECIAL && board[i].array != edge)
-            goto fail;
-
-    if (containsLoops(board))
-        goto fail;
-
-success:
-    free(pool);
-    free(queue);
-    free(explore);
-    return 1;
-fail:
-    free(pool);
-    free(queue);
-    free(explore);
-    return 0;
-}
-
-int solveMasked(struct state_set *board, uint32_t *mask)
-{
-    puts("backtrack");
-#ifdef ANIMATE
-    system("clear");
-#endif
-    const int size = dim_x * dim_y;
-    uint32_t *explore = calloc(sizeof(uint32_t), size);
-    struct xy *queue = calloc(sizeof(struct xy), size);
-    struct xy *pool = calloc(sizeof(struct xy), size);
-    if (!explore || !queue || !pool)
-        goto fail;
-    int pool_len = 0;
-    int explored_len = 0;
-    int q_start = 0;
-    int q_end = 0;
-    int solved = 0;
-
-    for (int i = 0; i < size; i++) {
-        if (mask[i] == SPECIAL) {
-            updatePossible(board, i % dim_x, i / dim_x);
-            if (__builtin_popcount(board[i].bitmask) != 1) {
-                pool[pool_len].x = i % dim_x;
-                pool[pool_len++].y = i / dim_x;
-            }
-            if (__builtin_popcount(board[i].bitmask) == 0)
-                goto fail;
-        }
-    }
-
-    DFSCheck(board, explore, 0, 0);
-
-    for (int i = 0; i < size; i++)
-        if (explore[i] != SPECIAL && board[i].array != edge)
-            goto fail;
-
-    if (containsLoops(board)) {
-        puts("loop");
-        goto fail;
-    }
-
-    memset(explore, 0, size * sizeof(*explore));
-
-    for (uint32_t breadth = 0; pool_len > 0;) {
-        int selection = random() % pool_len;
-        int x_r = pool[selection].x;
-        int y_r = pool[selection].y;
-        queue[q_end % size].x = x_r;
-        queue[q_end++ % size].y = y_r;
-        explore[x_r + y_r * dim_x] = breadth + 1;
-
-        while (q_end - q_start > 0) {
-#ifdef ANIMATE
-            printf("\033[0;0H");
-            printResultMasked(board, mask);
-            usleep(1000);
-#endif
-            
-            int x = queue[q_start % size].x;
-            int y = queue[q_start++ % size].y;
-            breadth = explore[x + y * dim_x];
-
-            struct state_set *current = &board[x + y * dim_x];
-            union cell_state init = current->possible;
-
-            updatePossible(board, x, y);
-
-            int pop = __builtin_popcount(current->bitmask);
-            if (pop == 0)
-                goto fail;
-            else if (pop == 1) {
-                int k = 0;
-                while ((pool[k].x != x || pool[k].y != y) && k < pool_len + explored_len)
-                    k++;
-                if (k < pool_len) {
-                    pool[k] = pool[pool_len - 1];
-                    pool[pool_len - 1] = pool[pool_len + explored_len - 1];
-                    pool_len--;
-                }
-                else if (k < pool_len + explored_len) {
-                    pool[k] = pool[pool_len + explored_len - 1];
-                    explored_len--;
-                }
-            } else if (init.bits == current->possible.bits) {
-                int k = 0;
-                while ((pool[k].x != x || pool[k].y != y) && k < pool_len)
-                    k++;
-                if (k != pool_len) {
-                    struct xy temp = pool[k];
-                    pool[k] = pool[pool_len - 1];
-                    pool[--pool_len] = temp;
-                    explored_len++;
-                }
-            } else {
+                board[pool[min_idx].x + pool[min_idx].y * dim_x].bitmask &= ~new_mask;
                 pool_len += explored_len;
                 explored_len = 0;
             }
 
-
-            union cell_state diff = (union cell_state)(uint16_t)(init.bits ^ current->possible.bits);
-
-            int n_y = (y - 1 + dim_y) % dim_y;
-            int s_y = (y + 1) % dim_y;
-            int e_x = (x + 1) % dim_x;
-            int w_x = (x - 1 + dim_x) % dim_x;
-
-            if (diff.n && explore[x + n_y * dim_x] != breadth + 1 && mask[x + n_y * dim_x] == SPECIAL) {
-                queue[q_end % size].x = x;
-                queue[q_end++ % size].y = n_y;
-                explore[x + n_y * dim_x] = breadth + 1;
-            }
-            if (diff.e && explore[e_x + y * dim_x] != breadth + 1 && mask[e_x + y * dim_x] == SPECIAL) {
-                queue[q_end % size].x = e_x;
-                queue[q_end++ % size].y = y;
-                explore[e_x + y * dim_x] = breadth + 1;
-            }
-            if (diff.s && explore[x + s_y * dim_x] != breadth + 1 && mask[x + s_y * dim_x] == SPECIAL) {
-                queue[q_end % size].x = x;
-                queue[q_end++ % size].y = s_y;
-                explore[x + s_y * dim_x] = breadth + 1;
-            }
-            if (diff.w && explore[w_x + y * dim_x] != breadth + 1 && mask[w_x + y * dim_x] == SPECIAL) {
-                queue[q_end % size].x = w_x;
-                queue[q_end++ % size].y = y;
-                explore[w_x + y * dim_x] = breadth + 1;
-            }
-        }
-        if (pool_len == 0 && explored_len > 0) {
-            if (containsLoops(board)) {
-                goto fail;
-            }
-
-            struct state_set *new_board = calloc(sizeof(struct state_set), size);
-            memcpy(new_board, board, sizeof(struct state_set) * size);
-
-            uint32_t new_mask;
-            //int rand_pool;
-            struct state_set *curr;
-
-            qsort(pool, explored_len, sizeof(*pool), randCmpFn);
-            curr = &new_board[pool->x + pool->y * dim_x];
-            updatePossible(board, pool->x, pool->y);
-            if (__builtin_popcount((int)curr->bitmask) == 0)
-                goto fail;
-            int random_start = random() & 31;
-            uint16_t first;
-            
-            for (int j = 0; j < 32; j++)
-                if ((new_mask = 1 << ((j + random_start) & 31)) & curr->bitmask) {
-                    first = curr->array[(j + random_start) & 31].bits & 02222;
-                    break;
-                }
-
-            int j_max = CHAR_BIT * sizeof(int) - __builtin_clz((int)curr->bitmask);
-
-
-            curr->bitmask = new_mask;
-
-            memset(explore, 0, size * sizeof(*explore));
-            markAllDependent(new_board, explore, pool->x, pool->y);
-            
-            if (solveMasked(new_board, explore)) {
-                memcpy(board, new_board, size * sizeof(struct state_set));
-                pool_len = 0;
-                for (int i = 0; i < size; i++) {
-                    if (mask[i]) {
-                        updatePossible(board, i % dim_x, i / dim_x);
-                        if (__builtin_popcount(board[i].bitmask) > 1) {
-                            pool[pool_len].x = i % dim_x;
-                            pool[pool_len++].y = i / dim_x;
-                        }
-                        if (__builtin_popcount(board[i].bitmask) == 0)
-                            goto fail;
-                    }
-                }
-                
-            }
-            else {
-                board[pool[0].x + pool[0].y * dim_x].bitmask &= ~new_mask;
-                pool_len += explored_len;
-            }
-            explored_len = 0;
-
-            memset(explore, 0, size * sizeof(*explore));
-
             free(new_board);
         }
     }
-
-    memset(explore, 0, size * sizeof(*explore));
-
     DFSCheck(board, explore, 0, 0);
 
     for (int i = 0; i < size; i++)
         if (explore[i] != SPECIAL && board[i].array != edge)
             goto fail;
-
-    if (containsLoops(board))
-        goto fail;
 
 success:
     free(pool);
@@ -996,32 +639,25 @@ void boardOutput(struct state_set *board, char *str)
 void generatePuzzle()
 {
     const char *blank_6 =
-        "aaaaaaaaaae\n"
-        "aaaaaaaaaae\n"
-        "aaaaaaaaaae\n"
-        "aaaaaaaaaae\n"
-        "aaaaaaaaaae\n"
-        "aaaaAaaaaae\n"
-        "aaaaaaaaaae\n"
-        "aaaaaaaaaae\n"
-        "aaaaaaaaaae\n"
-        "aaaaaaaaaae\n"
-        "eeeeeeeeeee\n";
+        "aaaaaaae\n"
+        "aaaaaaae\n"
+        "aaaaaaae\n"
+        "aaaAaaae\n"
+        "aaaaaaae\n"
+        "aaaaaaae\n"
+        "aaaaaaae\n"
+        "eeeeeeee\n";
 
     struct state_set *board = parseBoard(blank_6, &dim_x, &dim_y);
-    //board[dim_x / 2 + dim_y / 2 * dim_x].bitmask = 1;
-    //board[dim_x / 2 + dim_y / 2 * dim_x].possible = board[dim_x / 2 + dim_y / 2 * dim_x].array[0];
     
-    if (!solve(board))
-        exit(EXIT_FAILURE);
-    printResult(board);
+    solve(board);
+    //printResult(board);
 }
 
-#define SIZE "6"
+#define SIZE "8"
 
 int main()
 {
-    srandom(time(NULL));
     assert(sizeof(union cell_state) == sizeof(uint16_t));
     createRotations(split, array_len(split));
     createRotations(pipe, array_len(pipe));
@@ -1042,8 +678,8 @@ int main()
     memcpy((all_src_curr += sizeof(split_src)), pipe_src, sizeof(pipe_src));
     memcpy((all_src_curr += sizeof(pipe_src)), elbow_src, sizeof(elbow_src));
 
-    //generatePuzzle();
-    //return 0;
+    generatePuzzle();
+    return 0;
 
     regex_t task_reg;
     if (regcomp(&task_reg, "var task = '[1-9a-e]+';", REG_EXTENDED))
@@ -1185,4 +821,7 @@ int main()
         
         return 0;
     }
+// Weird test case:
+// 4c4482d83468328155cb26dd4d2ea63ed1aa2da8e2d5115eb3be9626be59293b1bd25925141378dc4a73ea95d88dc2a45a9691d7819977eb7ebdcd288dbe75e88b3dbb9967392d8375919215bde621addaad1cdb45a3ae995372aa732833b5a9222aaa9d128db2e26744683ab44887568
 }
+
