@@ -1,1 +1,1 @@
-gcc main.c -g -I/home/connor/anaconda3/include -L/home/connor/anaconda3/lib -lcurl -lm
+gcc main.c -g -O3 -I/home/connor/anaconda3/include -L/home/connor/anaconda3/lib -lc -lcurl -lm

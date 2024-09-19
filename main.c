@@ -9,9 +9,17 @@
 #include <regex.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
+#include <getopt.h>
+#include <errno.h>
+#include <ctype.h>
+#include <sys/times.h>
+#include <sys/types.h>
 //#include <unistd.h>
 
-#define ANIMATE
+int animate = 0;
+int animate_delay_us = 1000;
+CURL *curl;
 
 int usleep(uint64_t usec);
 
@@ -291,13 +299,76 @@ int DFSCheck(struct state_set *board, uint32_t *explore, int x, int y)
     }
     
     return res;
-}    
+}
+
+int DFSCheckConfirmed(struct state_set *board, uint32_t *explore, int x, int y)
+{
+    struct state_set current = board[x + y * dim_x];
+    uint32_t *mark = &explore[x + y * dim_x];
+
+    if (*mark == SPECIAL) {
+        return 1;
+    }
+
+    *mark = SPECIAL;
+
+    int n_y = (y - 1 + dim_y) % dim_y;
+    int s_y = (y + 1) % dim_y;
+    int e_x = (x + 1) % dim_x;
+    int w_x = (x - 1 + dim_x) % dim_x;
+
+    int res = 0;
+
+    if ((current.possible.n  == OUT)) {
+        res += DFSCheckConfirmed(board, explore, x, n_y);
+    }
+    if ((current.possible.e == OUT)) {
+        res += DFSCheckConfirmed(board, explore, e_x, y);
+    }
+    if ((current.possible.s == OUT)) {
+        res += DFSCheckConfirmed(board, explore, x, s_y);
+    }
+    if ((current.possible.w == OUT)) {
+        res += DFSCheckConfirmed(board, explore, w_x, y);
+    }
+    
+    return res;
+}
+
+int checkLoopAndContinuity(struct state_set *board)
+{
+    const int size = dim_x * dim_y;
+    uint32_t *explore = calloc(sizeof(uint32_t), size);
+    if (!explore)
+        return -1;
+    
+    for (int x = 0; x < dim_x; x++) {
+        for (int y = 0; y < dim_y; y++) {
+            if (DFSCheckConfirmed(board, explore, x, y)) {
+                free(explore);
+                return 1;
+            }
+            memset(explore, 0, sizeof(uint32_t) * size);
+        }
+    }
+    
+    DFSCheck(board, explore, 0, 0);
+    for (int y = 0; y < dim_y; y++) {
+        for (int x = 0; x < dim_x; x++) {
+            if ((explore[x + y * dim_x] != SPECIAL) && board[x + y * dim_x].possible.bits != edge[0].bits) {
+                free(explore);
+                return 1;
+            }
+        }
+    }
+    free(explore);
+    return 0;
+}
 
 int solve(struct state_set *board)
 {
-#ifdef ANIMATE
-    system("clear");
-#endif
+    if (animate)
+        system("clear");
     const int size = dim_x * dim_y;
     uint32_t *explore = calloc(sizeof(uint32_t), size);
     struct xy *queue = calloc(sizeof(struct xy), size);
@@ -309,16 +380,21 @@ int solve(struct state_set *board)
     int q_start = 0;
     int q_end = 0;
     int solved = 0;
-    srandom(31542);
+    srandom((unsigned) time(NULL));
 
     for (int i = 0; i < size; i++) {
         updatePossible(board, i % dim_x, i / dim_x);
+        //if (animate) {
+        //    printf("\033[0;0H");
+        //    printResult(board);
+        //    usleep(animate_delay_us);
+        //}
         if (__builtin_popcount(board[i].bitmask) != 1) {
             pool[pool_len].x = i % dim_x;
             pool[pool_len++].y = i / dim_x;
         }
-        if (__builtin_popcount(board[i].bitmask) == 0)
-            goto fail;
+        //if (__builtin_popcount(board[i].bitmask) == 0)
+        //    goto fail;
     }
     
     for (uint32_t breadth = 0; pool_len > 0;) {
@@ -330,11 +406,11 @@ int solve(struct state_set *board)
         explore[x_r + y_r * dim_x] = breadth + 1;
 
         while (q_end - q_start > 0) {
-#ifdef ANIMATE
-            printf("\033[0;0H");
-            printResult(board);
-            usleep(1000);
-#endif
+            if (animate) {
+                printf("\033[0;0H");
+                printResult(board);
+                usleep(animate_delay_us);
+            }
             
             int x = queue[q_start % size].x;
             int y = queue[q_start++ % size].y;
@@ -406,8 +482,21 @@ int solve(struct state_set *board)
             }
         }
         if (pool_len == 0 && explored_len > 0) {
+            if (checkLoopAndContinuity(board)) {
+                goto fail;
+            }
             struct state_set *new_board = calloc(sizeof(struct state_set), size);
             memcpy(new_board, board, sizeof(struct state_set) * size);
+
+            // shuffle pool to randomize collapse
+            if (explored_len > 1) {
+                for (int j = 0; j < explored_len; j++) {
+                    int k = j + random() / (RAND_MAX / (explored_len - j) + 1);
+                    struct xy t = pool[k];
+                    pool[k] = pool[j];
+                    pool[j] = t;
+                }
+            }
 
             // collapse orientation of a pipe but not flow direction
             uint32_t new_mask;
@@ -418,7 +507,11 @@ int solve(struct state_set *board)
                 struct state_set *curr = &new_board[pool[j].x + pool[j].y * dim_x];
                 int popcnt = __builtin_popcount((int)curr->bitmask);
                 if (popcnt < min) {
-                    int k = __builtin_ctz((int)curr->bitmask);
+                    int bitnum = random() % popcnt;
+                    int k = 0;
+                    for (int i = 0; i <= bitnum; k++)
+                        i += curr->bitmask >> k & 1;
+                    //int k = __builtin_ctz((int)curr->bitmask);
                     new_mask = 1 << k;
                     int k_max = CHAR_BIT * sizeof(int) - __builtin_clz((int)curr->bitmask);
                     uint32_t first = curr->array[k].bits & 02222;
@@ -519,6 +612,9 @@ struct write_string {
     size_t size;
 };
 
+// make public so it is availiable for the free callback
+struct write_string wstr = { 0 };
+
 size_t write_callback(char *ptr, size_t size, size_t nmemb, struct write_string *user_data)
 {
     size_t real_size = size * nmemb;
@@ -537,6 +633,18 @@ size_t write_callback(char *ptr, size_t size, size_t nmemb, struct write_string 
     user_data->len += real_size;
     user_data->str[user_data->len] = 0;
     return real_size;
+}
+
+void rewind_write(struct write_string *write_str)
+{
+    write_str->len = 0;
+}
+
+void cleanup_write(struct write_string *write_str)
+{
+    if (write_str->str)
+        free(write_str->str);
+    *write_str = (struct write_string){ 0 };
 }
 
 struct state_set *parseOnlineBoard(const char *str, size_t *width, size_t *height, int is_wrap)
@@ -612,6 +720,7 @@ struct state_set *parseOnlineBoard(const char *str, size_t *width, size_t *heigh
             board[i] = (struct state_set) { .array = sink, .possible = in_none, .bitmask = (1 << 4) - 1 };
             break;
         default:
+            puts("fatal");
             free(board);
             return NULL;
         }
@@ -638,6 +747,7 @@ void boardOutput(struct state_set *board, char *str)
 
 void generatePuzzle()
 {
+    
     const char *blank_6 =
         "aaaaaaae\n"
         "aaaaaaae\n"
@@ -648,16 +758,118 @@ void generatePuzzle()
         "aaaaaaae\n"
         "eeeeeeee\n";
 
-    struct state_set *board = parseBoard(blank_6, &dim_x, &dim_y);
+    const char *blank_8 =
+        "aaaaaaaaae\n"
+        "aaaaaaaaae\n"
+        "aaaaaaaaae\n"
+        "aaaaaaaaae\n"
+        "aaaaAaaaae\n"
+        "aaaaaaaaae\n"
+        "aaaaaaaaae\n"
+        "aaaaaaaaae\n"
+        "aaaaaaaaae\n"
+        "eeeeeeeeee\n";
+    
+    const char *blank_11_wrap =
+        "aaaaaaaaaaa\n"
+        "aaaaaaaaaaa\n"
+        "aaaaaaaaaaa\n"
+        "aaaaaaaaaaa\n"
+        "aaaaaaaaaaa\n"
+        "aaaaaAaaaaa\n"
+        "aaaaaaaaaaa\n"
+        "aaaaaaaaaaa\n"
+        "aaaaaaaaaaa\n"
+        "aaaaaaaaaaa\n"
+        "aaaaaaaaaaa\n";
+
+    struct state_set *board = parseBoard(blank_11_wrap, &dim_x, &dim_y);
     
     solve(board);
-    //printResult(board);
+    printResult(board);
 }
 
-#define SIZE "8"
-
-int main()
+char *url_encode(char *str) 
 {
+    // always long enough
+    char *buf = calloc(3 * strlen(str) + 1, 1);
+    if (!buf)
+        return NULL;
+    for (int i = 0, j = 0; str[i]; i++, j++) {
+        if (strchr(" <>#%+{}|\\^~[]`;/?:@=&$", str[i])) {
+            buf[j++] = '%';
+            buf[j++] = (str[i] >> 4 > 9) ? (str[i] >> 4) + 'A' - 10 : (str[i] >> 4) + '0';
+            buf[j] = ((str[i] & 15) > 9) ? (str[i] & 15) + 'A' - 10 : (str[i] & 15) + '0';
+        }
+        else {
+            buf[j] = str[i];
+        }
+    }
+    return buf;
+}
+
+void exit_cleanup()
+{
+    curl_easy_cleanup(curl);
+    cleanup_write(&wstr);
+}
+
+int main(int argc, char **argv)
+{
+    if (argc < 2) {
+        fprintf(stderr, "invalid usage, try: %s <size> [-(a)nimate [delay_in_us]] [--(u)ser user_email]\n", argv[0]);
+        return 1;
+    }
+
+    struct option long_options[] = {
+        { .name = "animate", .has_arg = optional_argument, .flag = NULL, .val = 'a' },
+        { .name = "user"   , .has_arg = required_argument, .flag = NULL, .val = 'u' },
+        { .name = 0        , .has_arg = 0                , .flag = NULL, .val = 0   }
+    };
+
+    char *online_size = argv[1];
+    // verify that this is a valid board size string
+    int size_len = strlen(online_size);
+    if (size_len > 2 || size_len < 1) {
+        fputs("Invalid board size\n", stderr);
+        exit(EXIT_FAILURE);
+    }
+    if (size_len == 2) {
+        if (online_size[0] != '1' || !isdigit(online_size[1])) {
+            fputs("Invalid board size\n", stderr);
+            exit(EXIT_FAILURE);
+        }
+    } else if (size_len == 1) {
+        if (!isdigit(online_size[0])) {
+            fputs("Invalid board size\n", stderr);
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    // only submit puzzle to hall of fame when not null
+    char *online_user = NULL;
+
+    int c;
+    while ((c = getopt_long_only(argc, argv, "a::u:", long_options, NULL)) != -1) {
+        switch (c) {
+            case 'a':
+                animate = 1;
+                if (optarg) {
+                    char *endptr = NULL;
+                    errno = 0;
+                    long long_delay = strtol(optarg, &endptr, 10);
+                    if (errno != 0 || long_delay < 0 || long_delay > 1000000) {
+                        fprintf(stderr, "invalid value for animation delay\n");
+                        return 1;
+                    }
+                    animate_delay_us = long_delay;
+                }
+                break;
+            case 'u':
+                online_user = optarg;
+                break;
+        }
+    }
     assert(sizeof(union cell_state) == sizeof(uint16_t));
     createRotations(split, array_len(split));
     createRotations(pipe, array_len(pipe));
@@ -678,8 +890,8 @@ int main()
     memcpy((all_src_curr += sizeof(split_src)), pipe_src, sizeof(pipe_src));
     memcpy((all_src_curr += sizeof(pipe_src)), elbow_src, sizeof(elbow_src));
 
-    generatePuzzle();
-    return 0;
+    //generatePuzzle();
+    //return 0;
 
     regex_t task_reg;
     if (regcomp(&task_reg, "var task = '[1-9a-e]+';", REG_EXTENDED))
@@ -693,24 +905,24 @@ int main()
     if (regcomp(&magic_reg, "input type=\"hidden\" name=\"solparams\" value=\"[^\"]*\"", REG_EXTENDED))
         return 1;
 
-    CURL *curl;
     CURLcode res;
-
-    struct write_string wstr = { 0 };
 
     curl_global_init(CURL_GLOBAL_ALL);
     
     curl = curl_easy_init();
+    atexit(exit_cleanup);
 
     if (curl) {
-        curl_easy_setopt(curl, CURLOPT_URL, "https://www.puzzle-pipes.com/?size=" SIZE);
+        char url_buf[40];
+        snprintf(url_buf, sizeof(url_buf), "https://www.puzzle-pipes.com/?size=%s", online_size);
+        curl_easy_setopt(curl, CURLOPT_URL, url_buf);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &wstr);
 
         int res = curl_easy_perform(curl);
         if (res != CURLE_OK) {
-            fprintf(stderr, "Could not connect to puzzle webpage");
-            return 1;
+            fprintf(stderr, "Could not connect to puzzle webpage\n");
+            exit(EXIT_FAILURE);
         }
 
         regmatch_t pmatch[2];
@@ -718,55 +930,54 @@ int main()
 
         if (regexec(&task_reg, wstr.str, 2, pmatch, 0) != 0) {
             fprintf(stderr, "Could not find task string in page\n");
-            return 1;
+            exit(EXIT_FAILURE);
         }
 
         if (regexec(&param_reg, wstr.str, 2, qmatch, 0) != 0) {
             fprintf(stderr, "Could not find the submit paramater in page\n");
-            return 1;
+            exit(EXIT_FAILURE);
         }
 
         wstr.str[pmatch[0].rm_eo - 2] = 0;
         char *task_match = wstr.str + pmatch[0].rm_so + 12;
-
+        
         wstr.str[qmatch[0].rm_eo - 1] = 0;
         char *param_match = wstr.str + qmatch[0].rm_so + 40;
 
-        struct state_set *s = parseOnlineBoard(task_match, &dim_x, &dim_y, SIZE[1] != 0);
+        struct state_set *s = parseOnlineBoard(task_match, &dim_x, &dim_y, strlen(online_size) > 1);
         if (!s) {
             fprintf(stderr, "Could not parse board input, API changed or malloc() failed\n");
-            return 1;
+            exit(EXIT_FAILURE);
         }
-        
-        printf("%d\n", solve(s));
+
+        struct timespec begin, end;
+        clock_gettime(CLOCK_MONOTONIC_RAW, &begin);
+        int result_code = solve(s);
+        clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+
+        if (result_code) {
+            printf("Solved successfully in %fs\n", (end.tv_nsec - begin.tv_nsec) / 1000000000.0 + (end.tv_sec  - begin.tv_sec));
+        } else {
+            puts("Board solving failed");
+            exit(EXIT_FAILURE);
+        }
 
         boardOutput(s, task_match);
         char *zeros = malloc(dim_x * dim_y + 1);
         if (!zeros)
-            return 1;
+            exit(EXIT_FAILURE);
         memset(zeros, '0', dim_x * dim_y);
         zeros[dim_x * dim_y] = 0;
 
         curl_easy_setopt(curl, CURLOPT_POST, 1L);
 
-        char magic_buf[512] = { 0 };
+        char *param_encoded = url_encode(param_match);
 
-        for (int i = 0, j = 0; j < sizeof(magic_buf) && param_match[i]; i++, j++) {
-            if (strchr(" <>#%+{}|\\^~[]`;/?:@=&$", param_match[i])) {
-                if (j + 3 < sizeof(magic_buf)) {
-                    magic_buf[j++] = '%';
-                    magic_buf[j++] = (param_match[i] >> 4 > 9) ? (param_match[i] >> 4) + 'A' - 10 : (param_match[i] >> 4) + '0';
-                    magic_buf[j] = (param_match[i] & 15 > 9) ? (param_match[i] & 15) + 'A' - 10 : (param_match[i] & 15) + '0';
-                }
-            }
-            else {
-                magic_buf[j] = param_match[i];
-            }
-        }
+        char header_buf[4096];
+        snprintf(header_buf, sizeof(header_buf), "jstimer=0&jsPersonalTimer=&jstimerPersonal=1&stopClock=0&fromSolved=0&robot=1&zoomSlider=1&jsTimerShow=&jsTimerShowPersonal=&b=1&size=%s&param=%s&w=%zu&h=%zu&ansH=%s%%3A%s&ready=+++Done+++",
+                online_size, param_encoded, dim_x, dim_y, task_match, zeros);
 
-        char header_buf[2048];
-        snprintf(header_buf, sizeof(header_buf), "jstimer=0&jsPersonalTimer=&jstimerPersonal=1&stopClock=0&fromSolved=0&robot=1&zoomSlider=1&jsTimerShow=&jsTimerShowPersonal=&b=1&size=" SIZE "&param=%s&w=%zu&h=%zu&ansH=%s%%3A%s&ready=+++Done+++",
-                magic_buf, dim_x, dim_y, task_match, zeros);
+        free(param_encoded);
 
         curl_easy_setopt(curl, CURLOPT_URL, "https://www.puzzle-pipes.com/");
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, header_buf);
@@ -782,44 +993,59 @@ int main()
 
         if (res != CURLE_OK) {
             fprintf(stderr, "Could not connect to webpage to submit puzzle\n");
-            return 1;
+            exit(EXIT_FAILURE);
         }
 
         if (regexec(&magic_reg, wstr.str, 2, pmatch, 0) != 0) {
             fprintf(stderr, "Could not submit puzzle\n");
-            return 1;
+            exit(EXIT_FAILURE);
         }
 
         wstr.str[pmatch[0].rm_eo - 1] = 0;
         char *magic_match = wstr.str + pmatch[0].rm_so + 44;
 
-        memset(magic_buf, 0, sizeof(magic_buf));
-
-        for (int i = 0, j = 0; j < sizeof(magic_buf) && magic_match[i]; i++, j++) {
-            if (strchr(" <>#%+{}|\\^~[]`;/?:@=&$", magic_match[i])) {
-                if (j + 3 < sizeof(magic_buf)) {
-                    magic_buf[j++] = '%';
-                    magic_buf[j++] = (magic_match[i] >> 4 > 9) ? (magic_match[i] >> 4) + 'A' - 10 : (magic_match[i] >> 4) + '0';
-                    magic_buf[j] = (magic_match[i] & 15 > 9) ? (magic_match[i] & 15) + 'A' - 10 : (magic_match[i] & 15) + '0';
-                }
-            }
-            else {
-                magic_buf[j] = magic_match[i];
-            }
+        if (!online_user) {
+            puts("No email provided, not submitting to hall of fame");
+            exit(EXIT_SUCCESS);
         }
+        
+        char *solparams_encoded = url_encode(magic_match);
+        char *email_encoded = url_encode(online_user);
 
-        snprintf(header_buf, sizeof(header_buf), "submitscore=1&solparams=%s&robot=1&email=connormc757%%40gmail.com", magic_buf);
+        snprintf(header_buf, sizeof(header_buf), "submitscore=1&solparams=%s&robot=1&email=%s", solparams_encoded, email_encoded);
+
+        free(solparams_encoded);
+        free(email_encoded);
 
         curl_easy_setopt(curl, CURLOPT_POST, 1L);
         curl_easy_setopt(curl, CURLOPT_URL, "https://www.puzzle-pipes.com/hallsubmit.php");
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, header_buf);
+        rewind_write(&wstr);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &wstr);
+
 
         if (curl_easy_perform(curl) != CURLE_OK) {
             fprintf(stderr, "Could not submit to hall of fame\n");
-            return 1;
+            exit(EXIT_FAILURE);
+        }
+
+        char *found;
+        
+        if ((found = strstr(wstr.str, "Congratulations! You have solved the puzzle in "))) {
+            found += 47;
+            if (strlen(found) < 9)
+                puts("Successfully submitted puzzle to hall of fame, server measured time unknown");
+            else {
+                found[9] = '\0';
+                printf("Successfully submitted puzzle to hall of fame, server measured time: %s\n", found);
+            }
+        } else {
+            fprintf(stderr, "Puzzle could not be submitted to hall of fame, perhaps an unregistered or invalid email, or a special daily puzzle\n");
+            exit(EXIT_FAILURE);
         }
         
-        return 0;
+        exit(EXIT_SUCCESS);
     }
 // Weird test case:
 // 4c4482d83468328155cb26dd4d2ea63ed1aa2da8e2d5115eb3be9626be59293b1bd25925141378dc4a73ea95d88dc2a45a9691d7819977eb7ebdcd288dbe75e88b3dbb9967392d8375919215bde621addaad1cdb45a3ae995372aa732833b5a9222aaa9d128db2e26744683ab44887568
