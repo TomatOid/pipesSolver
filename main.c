@@ -384,17 +384,12 @@ int solve(struct state_set *board)
 
     for (int i = 0; i < size; i++) {
         updatePossible(board, i % dim_x, i / dim_x);
-        //if (animate) {
-        //    printf("\033[0;0H");
-        //    printResult(board);
-        //    usleep(animate_delay_us);
-        //}
         if (__builtin_popcount(board[i].bitmask) != 1) {
             pool[pool_len].x = i % dim_x;
             pool[pool_len++].y = i / dim_x;
         }
-        //if (__builtin_popcount(board[i].bitmask) == 0)
-        //    goto fail;
+        if (__builtin_popcount(board[i].bitmask) == 0)
+            goto fail;
     }
     
     for (uint32_t breadth = 0; pool_len > 0;) {
@@ -850,7 +845,7 @@ int main(int argc, char **argv)
     char *online_user = NULL;
 
     int c;
-    while ((c = getopt_long_only(argc, argv, "a::u:", long_options, NULL)) != -1) {
+    while ((c = getopt_long_only(argc - 1, argv + 1, "a::u:", long_options, NULL)) != -1) {
         switch (c) {
             case 'a':
                 animate = 1;
