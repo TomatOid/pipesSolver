@@ -88,7 +88,7 @@ union cell_state edge[1] = {
 
 union cell_state all_pipes[28];
 
-union cell_state all_src[10];
+union cell_state all_src[14];
 
 const union cell_state in_out_none = {
     { IN | OUT | NONE, IN | OUT | NONE, IN | OUT | NONE, IN | OUT | NONE },
@@ -181,7 +181,7 @@ struct state_set *parseBoard(const char *str, size_t *width, size_t *height)
             board[i] = (struct state_set) { .array = all_pipes, .possible = in_out_none, .bitmask = (1 << 28) - 1 };
             break;
         case 'A':
-            board[i] = (struct state_set) { .array = all_src, .possible = out_none, .bitmask = (1 << 10) - 1 };
+            board[i] = (struct state_set) { .array = all_src, .possible = out_none, .bitmask = (1 << 14) - 1 };
             break;
         case '\n':
             i--;
@@ -365,6 +365,21 @@ int checkLoopAndContinuity(struct state_set *board)
     return 0;
 }
 
+void updatePossibleSingle(struct state_set *single)
+{
+    int k_max = CHAR_BIT * sizeof(int) - __builtin_clz((int)single->bitmask);
+    single->possible.bits = 0;
+    for (int k = 0; k < k_max; k++) {
+        single->possible.bits |= ((single->bitmask >> k) & 1) ? single->array[k].bits : 0;
+    }
+}
+
+enum {
+    SOLVE_FAILED,
+    SOLVE_SUCCESS_UNIQUE,
+    SOLVE_SUCCESS_MULTIPLE,
+};
+
 int solve(struct state_set *board)
 {
     if (animate)
@@ -380,7 +395,7 @@ int solve(struct state_set *board)
     int q_start = 0;
     int q_end = 0;
     int solved = 0;
-    srandom((unsigned) time(NULL));
+    int return_state = SOLVE_SUCCESS_UNIQUE;
 
     for (int i = 0; i < size; i++) {
         updatePossible(board, i % dim_x, i / dim_x);
@@ -493,26 +508,26 @@ int solve(struct state_set *board)
                 }
             }
 
-            // collapse orientation of a pipe but not flow direction
-            uint32_t new_mask;
-            struct state_set *least_entropy;
+            uint32_t new_mask, min_mask;
+            struct state_set *least_entropy = NULL;
             int min = 33;
             int min_idx;
             for (int j = 0; j < explored_len; j++) {
                 struct state_set *curr = &new_board[pool[j].x + pool[j].y * dim_x];
                 int popcnt = __builtin_popcount((int)curr->bitmask);
                 if (popcnt < min) {
-                    int bitnum = random() % popcnt;
+                    // randomly pick a collapse state
+                    int rand_bit_num = random() % popcnt;
                     int k = 0;
-                    for (int i = 0; i <= bitnum; k++)
-                        i += curr->bitmask >> k & 1;
-                    //int k = __builtin_ctz((int)curr->bitmask);
-                    new_mask = 1 << k;
+                    for (int bit_count = 0; bit_count <= rand_bit_num; k++)
+                        bit_count += (curr->bitmask >> k) & 1;
+                    new_mask = 1 << (k - 1);
                     int k_max = CHAR_BIT * sizeof(int) - __builtin_clz((int)curr->bitmask);
                     uint32_t first = curr->array[k].bits & 02222;
                     
-                    for (; k < k_max; k++)
-                        if (curr->array[k].bits & 02222 == first)
+                    // collapse orientation of a pipe but not flow direction
+                    for (k = 0; k < k_max; k++)
+                        if (curr->array[k].bits & 02222 == first && ((curr->bitmask >> k) & 1))
                             new_mask |= 1 << k;
 
                     if (new_mask == curr->bitmask)
@@ -521,29 +536,72 @@ int solve(struct state_set *board)
                     min = popcnt;
                     min_idx = j;
                     least_entropy = curr;
+                    min_mask = new_mask;
                 }
             }
-            
-            int k = __builtin_ctz((int)least_entropy->bitmask);
-            new_mask = 1 << k;
-            int k_max = CHAR_BIT * sizeof(int) - __builtin_clz((int)least_entropy->bitmask);
-            uint32_t first = least_entropy->array[k].bits & 02222;
-            
-            for (; k < k_max; k++)
-                if (least_entropy->array[k].bits & 02222 == first)
-                    new_mask |= 1 << k;
 
-            least_entropy->bitmask = new_mask;
-
-            if (solve(new_board)) {
-                memcpy(board, new_board, size * sizeof(struct state_set));
+            if (!least_entropy) {
                 free(new_board);
-                goto success;
+                goto fail;
             }
-            else {
-                board[pool[min_idx].x + pool[min_idx].y * dim_x].bitmask &= ~new_mask;
-                pool_len += explored_len;
-                explored_len = 0;
+            
+            least_entropy->bitmask = min_mask;
+            // update the possible cell_states
+            updatePossibleSingle(least_entropy);
+            
+
+            switch (solve(new_board)) {
+                case SOLVE_SUCCESS_UNIQUE: 
+                    {
+                    struct state_set *test_board = calloc(sizeof(struct state_set), size);
+
+                    uint32_t reduced_bitmask = board[pool[min_idx].x + pool[min_idx].y * dim_x].bitmask;
+                    return_state = SOLVE_SUCCESS_MULTIPLE;
+                    do {
+                        reduced_bitmask &= ~min_mask;
+                        if (reduced_bitmask == 0) {
+                            return_state = SOLVE_SUCCESS_UNIQUE;
+                            break;
+                        }
+
+                        memcpy(test_board, board, sizeof(struct state_set) * size);
+
+                        int popcnt = __builtin_popcount(reduced_bitmask);
+
+                        int rand_bit_num = random() % popcnt;
+                        int k = 0;
+                        for (int bit_count = 0; bit_count <= rand_bit_num; k++)
+                            bit_count += (reduced_bitmask >> k) & 1;
+                        min_mask = 1 << (k - 1);
+                        int k_max = CHAR_BIT * sizeof(int) - __builtin_clz((int)reduced_bitmask);
+                        uint32_t first = least_entropy->array[k].bits & 02222;
+                        
+                        // collapse orientation of a pipe but not flow direction
+                        for (k = 0; k < k_max; k++)
+                            if (least_entropy->array[k].bits & 02222 == first && ((reduced_bitmask >> k) & 1))
+                                min_mask |= 1 << k;
+
+                        test_board[pool[min_idx].x + pool[min_idx].y * dim_x].bitmask = min_mask;
+                        updatePossibleSingle(&test_board[pool[min_idx].x + pool[min_idx].y * dim_x]);
+                    } while (solve(test_board) == SOLVE_FAILED);
+                        
+                    memcpy(board, new_board, size * sizeof(struct state_set));
+                    free(new_board);
+                    free(test_board);
+                    goto success;
+                } break;
+                case SOLVE_SUCCESS_MULTIPLE:
+                    memcpy(board, new_board, size * sizeof(struct state_set));
+                    free(new_board);
+                    return_state = SOLVE_SUCCESS_MULTIPLE;
+                    goto success;
+                    break;
+                case SOLVE_FAILED:
+                    board[pool[min_idx].x + pool[min_idx].y * dim_x].bitmask &= ~min_mask;
+                    updatePossibleSingle(&board[pool[min_idx].x + pool[min_idx].y * dim_x]);
+                    pool_len += explored_len;
+                    explored_len = 0;
+                    break;
             }
 
             free(new_board);
@@ -559,12 +617,12 @@ success:
     free(pool);
     free(queue);
     free(explore);
-    return 1;
+    return return_state;
 fail:
     free(pool);
     free(queue);
     free(explore);
-    return 0;
+    return SOLVE_FAILED;
 }
 
 #define array_len(x) ((sizeof x) / (sizeof *x))
@@ -778,9 +836,82 @@ void generatePuzzle()
         "aaaaaaaaaaa\n"
         "aaaaaaaaaaa\n";
 
-    struct state_set *board = parseBoard(blank_11_wrap, &dim_x, &dim_y);
+    const char *blank_25_wrap =
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaAaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n"
+        "aaaaaaaaaaaaaaaaaaaaaaaaae\n";
+
+    struct state_set *board = parseBoard(blank_25_wrap, &dim_x, &dim_y);
     
-    solve(board);
+    printf("%d\n", solve(board));
+    printResult(board);
+
+    for (int i = 0; i < dim_x * dim_y; i++) {
+        if (board[i].array == all_pipes) {
+            switch (__builtin_ctz((int)board[i].bitmask)) {
+                case 0 ... 11: // split
+                    board[i].array = split;
+                    board[i].bitmask = (1 << 12) - 1;
+                    break;
+                case 12 ... 15: // pipe
+                    board[i].array = pipe;
+                    board[i].bitmask = (1 << 4) - 1;
+                    break;
+                case 16 ... 23: // elbow
+                    board[i].array = elbow;
+                    board[i].bitmask = (1 << 8) - 1;
+                    break;
+                case 24 ... 27: // sink
+                    board[i].array = sink;
+                    board[i].bitmask = (1 << 4) - 1;
+                    break;
+            }
+        } else if (board[i].array == all_src) {
+            switch (__builtin_ctz((int)board[i].bitmask)) {
+                case 0 ... 3: // split
+                    board[i].array = split_src;
+                    board[i].bitmask = (1 << 4) - 1;
+                    break;
+                case 4 ... 5: // pipe
+                    board[i].array = pipe_src;
+                    board[i].bitmask = (1 << 2) - 1;
+                    break;
+                case 6 ... 9: // elbow
+                    board[i].array = elbow_src;
+                    board[i].bitmask = (1 << 4) - 1;
+                    break;
+                case 10 ... 13: // single
+                    board[i].array = single_src;
+                    board[i].bitmask = (1 << 4) - 1;
+                    break;
+            }
+        }
+        updatePossibleSingle(&board[i]);
+    }
+
+    printf("\nPuzzle is %s\n", (solve(board) == SOLVE_SUCCESS_UNIQUE) ? "unique" : "not unique");
     printResult(board);
 }
 
@@ -884,9 +1015,12 @@ int main(int argc, char **argv)
     memcpy(all_src_curr, split_src, sizeof(split_src));
     memcpy((all_src_curr += sizeof(split_src)), pipe_src, sizeof(pipe_src));
     memcpy((all_src_curr += sizeof(pipe_src)), elbow_src, sizeof(elbow_src));
+    memcpy((all_src_curr += sizeof(elbow_src)), single_src, sizeof(single_src));
 
-    //generatePuzzle();
-    //return 0;
+    srandom((unsigned) time(NULL));
+
+    generatePuzzle();
+    return 0;
 
     regex_t task_reg;
     if (regcomp(&task_reg, "var task = '[1-9a-e]+';", REG_EXTENDED))
@@ -913,6 +1047,8 @@ int main(int argc, char **argv)
         curl_easy_setopt(curl, CURLOPT_URL, url_buf);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &wstr);
+
+        //curl_easy_setopt(curl, CURLOPT_USE_SSL, CURLUSESSL_NONE);
 
         int res = curl_easy_perform(curl);
         if (res != CURLE_OK) {
@@ -952,6 +1088,7 @@ int main(int argc, char **argv)
 
         if (result_code) {
             printf("Solved successfully in %fs\n", (end.tv_nsec - begin.tv_nsec) / 1000000000.0 + (end.tv_sec  - begin.tv_sec));
+            printf("return code: %d\n", result_code);
         } else {
             puts("Board solving failed");
             exit(EXIT_FAILURE);
@@ -969,13 +1106,16 @@ int main(int argc, char **argv)
         char *param_encoded = url_encode(param_match);
 
         char header_buf[4096];
-        snprintf(header_buf, sizeof(header_buf), "jstimer=0&jsPersonalTimer=&jstimerPersonal=1&stopClock=0&fromSolved=0&robot=1&zoomSlider=1&jsTimerShow=&jsTimerShowPersonal=&b=1&size=%s&param=%s&w=%zu&h=%zu&ansH=%s%%3A%s&ready=+++Done+++",
+        snprintf(header_buf, sizeof(header_buf), 
+                "jstimer=0&jsPersonalTimer=&jstimerPersonal=1&stopClock=0&fromSolved=0&robot=1&zoomSlider=1&"
+                "jsTimerShow=&jsTimerShowPersonal=&b=1&size=%s&param=%s&w=%zu&h=%zu&ansH=%s%%3A%s&ready=+++Done+++",
                 online_size, param_encoded, dim_x, dim_y, task_match, zeros);
 
         free(param_encoded);
 
         curl_easy_setopt(curl, CURLOPT_URL, "https://www.puzzle-pipes.com/");
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, header_buf);
+        //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1);
 
         free(wstr.str);
         wstr = (struct write_string) { 0 };
