@@ -1,4 +1,4 @@
-A solver for the pipes puzzle on [puzzle-pipes.com](puzzle-pipes.com)
+A solver for the pipes puzzle on [puzzle-pipes.com](https://puzzle-pipes.com)
 
 ### Features
 
