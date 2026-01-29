@@ -1,5 +1,5 @@
      CC := clang
-CCFLAGS := -O0 -Wall
+CCFLAGS := -Wall
 DBFLAGS := -g
 
 TARGETS := run_solver generate
